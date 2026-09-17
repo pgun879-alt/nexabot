@@ -49,8 +49,12 @@ pytest
 Quality gates (both must stay clean):
 
 ```bash
-mypy src && ruff check src tests
+mypy src migrations && ruff check .
 ```
+
+The test suite runs the migration chain up and down against SQLite and asserts
+that the resulting schema matches `Base.metadata`, so migration/model drift
+fails a build rather than a deploy.
 
 ## Running
 

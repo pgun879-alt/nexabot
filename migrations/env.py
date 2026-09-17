@@ -28,6 +28,15 @@ target_metadata = Base.metadata
 
 
 def get_database_url() -> str:
+    """Resolve the target database.
+
+    An explicitly supplied URL wins so tests and one-off tooling can point the
+    chain at a scratch database without mutating the environment; otherwise the
+    normal configuration applies.
+    """
+    override = config.attributes.get("database_url")
+    if override:
+        return str(override)
     return Settings.load().database.url
 
 

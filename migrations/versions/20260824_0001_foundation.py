@@ -1,5 +1,11 @@
 """foundation schema
 
+Constraints are declared inline in ``create_table`` rather than added
+afterwards with ``op.create_unique_constraint``. SQLite cannot ALTER a table to
+add a constraint, so the standalone form makes the whole chain impossible to
+smoke-test anywhere but PostgreSQL. Inline declarations run everywhere and
+produce the same schema.
+
 Revision ID: 20260824_0001
 Revises:
 Create Date: 2026-08-24
@@ -7,99 +13,155 @@ Create Date: 2026-08-24
 
 from __future__ import annotations
 
-from alembic import op
+from datetime import datetime
+
 import sqlalchemy as sa
+from alembic import op
 
 revision = "20260824_0001"
 down_revision = None
 branch_labels = None
 depends_on = None
 
+_UUID = sa.String(36)
 
-def timestamps() -> list[sa.Column]:
+
+def _pk(name: str = "id") -> sa.Column[str]:
+    return sa.Column(name, _UUID, primary_key=True)
+
+
+def _fk(
+    table: str,
+    name: str,
+    target: str,
+    *,
+    nullable: bool = False,
+    ondelete: str | None = None,
+) -> sa.Column[str]:
+    """A foreign key named the way the ORM's naming convention names it.
+
+    Leaving these unnamed lets each backend invent its own, which then shows up
+    as spurious drift the first time someone runs ``--autogenerate``.
+    """
+    referred = target.split(".")[0]
+    return sa.Column(
+        name,
+        _UUID,
+        sa.ForeignKey(target, name=f"fk_{table}_{name}_{referred}", ondelete=ondelete),
+        nullable=nullable,
+    )
+
+
+def _timestamps() -> list[sa.Column[datetime]]:
     return [
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     ]
 
 
-def uuid_column(name: str = "id") -> sa.Column:
-    return sa.Column(name, sa.String(36), primary_key=True)
+def _index(name: str, table: str, columns: list[str], *, unique: bool = False) -> None:
+    op.create_index(name, table, columns, unique=unique)
 
 
 def upgrade() -> None:
-    op.create_table("users", uuid_column(), sa.Column("status", sa.String(32), nullable=False), *timestamps())
-    op.create_index("ix_users_status", "users", ["status"])
+    op.create_table(
+        "users",
+        _pk(),
+        sa.Column("status", sa.String(32), nullable=False),
+        *_timestamps(),
+    )
+    _index("ix_users_status", "users", ["status"])
 
-    op.create_table("roles", uuid_column(), sa.Column("name", sa.String(128), nullable=False), sa.Column("description", sa.Text), *timestamps())
-    op.create_unique_constraint("uq_roles_name", "roles", ["name"])
+    op.create_table(
+        "roles",
+        _pk(),
+        sa.Column("name", sa.String(128), nullable=False),
+        sa.Column("description", sa.Text),
+        *_timestamps(),
+        sa.UniqueConstraint("name", name="uq_roles_name"),
+    )
 
     op.create_table(
         "permissions",
-        uuid_column(),
+        _pk(),
         sa.Column("namespace", sa.String(128), nullable=False),
         sa.Column("action", sa.String(128), nullable=False),
-        *timestamps(),
+        *_timestamps(),
+        sa.UniqueConstraint(
+            "namespace", "action", name="uq_permissions_namespace_action"
+        ),
     )
-    op.create_unique_constraint("uq_permissions_namespace_action", "permissions", ["namespace", "action"])
 
     op.create_table(
         "user_roles",
-        sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
-        sa.Column("role_id", sa.String(36), sa.ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
+        _fk("user_roles", "user_id", "users.id", ondelete="CASCADE"),
+        _fk("user_roles", "role_id", "roles.id", ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("user_id", "role_id", name="pk_user_roles"),
     )
 
     op.create_table(
         "role_permissions",
-        sa.Column("role_id", sa.String(36), sa.ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
-        sa.Column("permission_id", sa.String(36), sa.ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True),
+        _fk("role_permissions", "role_id", "roles.id", ondelete="CASCADE"),
+        _fk("role_permissions", "permission_id", "permissions.id", ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint(
+            "role_id", "permission_id", name="pk_role_permissions"
+        ),
     )
 
     op.create_table(
         "telegram_identities",
-        uuid_column(),
-        sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id"), nullable=False),
+        _pk(),
+        _fk("telegram_identities", "user_id", "users.id"),
         sa.Column("telegram_user_id", sa.BigInteger, nullable=False),
         sa.Column("username", sa.String(255)),
         sa.Column("first_name", sa.String(255)),
         sa.Column("last_name", sa.String(255)),
-        *timestamps(),
+        *_timestamps(),
+        sa.UniqueConstraint("user_id", name="uq_telegram_identities_user_id"),
     )
-    op.create_unique_constraint("uq_telegram_identities_user_id", "telegram_identities", ["user_id"])
-    op.create_unique_constraint("uq_telegram_identities_telegram_user_id", "telegram_identities", ["telegram_user_id"])
-    op.create_index("ix_telegram_identities_telegram_user_id", "telegram_identities", ["telegram_user_id"])
+    _index("ix_telegram_identities_user_id", "telegram_identities", ["user_id"])
+    # The model declares unique=True alongside index=True, which SQLAlchemy
+    # renders as one unique index rather than a constraint plus a plain index.
+    _index(
+        "ix_telegram_identities_telegram_user_id",
+        "telegram_identities",
+        ["telegram_user_id"],
+        unique=True,
+    )
 
     op.create_table(
         "conversations",
-        uuid_column(),
-        sa.Column("owner_id", sa.String(36), sa.ForeignKey("users.id"), nullable=False),
+        _pk(),
+        _fk("conversations", "owner_id", "users.id"),
         sa.Column("status", sa.String(32), nullable=False),
         sa.Column("title", sa.String(255)),
         sa.Column("meta", sa.JSON, nullable=False),
-        *timestamps(),
+        *_timestamps(),
     )
-    op.create_index("ix_conversations_owner_id", "conversations", ["owner_id"])
-    op.create_index("ix_conversations_status", "conversations", ["status"])
-    op.create_index("ix_conversations_owner_status", "conversations", ["owner_id", "status"])
+    _index("ix_conversations_owner_id", "conversations", ["owner_id"])
+    _index("ix_conversations_status", "conversations", ["status"])
+    _index("ix_conversations_owner_status", "conversations", ["owner_id", "status"])
 
     op.create_table(
         "messages",
-        uuid_column(),
-        sa.Column("conversation_id", sa.String(36), sa.ForeignKey("conversations.id"), nullable=False),
+        _pk(),
+        _fk("messages", "conversation_id", "conversations.id"),
         sa.Column("role", sa.String(32), nullable=False),
         sa.Column("content", sa.Text, nullable=False),
         sa.Column("meta", sa.JSON, nullable=False),
-        *timestamps(),
+        *_timestamps(),
     )
-    op.create_index("ix_messages_conversation_id", "messages", ["conversation_id"])
-    op.create_index("ix_messages_role", "messages", ["role"])
-    op.create_index("ix_messages_conversation_created", "messages", ["conversation_id", "created_at"])
+    _index("ix_messages_conversation_id", "messages", ["conversation_id"])
+    _index("ix_messages_role", "messages", ["role"])
+    _index(
+        "ix_messages_conversation_created", "messages", ["conversation_id", "created_at"]
+    )
 
     op.create_table(
         "agent_runs",
-        uuid_column(),
-        sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id"), nullable=False),
-        sa.Column("conversation_id", sa.String(36), sa.ForeignKey("conversations.id"), nullable=False),
+        _pk(),
+        _fk("agent_runs", "user_id", "users.id"),
+        _fk("agent_runs", "conversation_id", "conversations.id"),
         sa.Column("status", sa.String(32), nullable=False),
         sa.Column("provider", sa.String(128), nullable=False),
         sa.Column("model", sa.String(128), nullable=False),
@@ -107,132 +169,136 @@ def upgrade() -> None:
         sa.Column("finished_at", sa.DateTime(timezone=True)),
         sa.Column("failure_reason", sa.Text),
         sa.Column("usage_metadata", sa.JSON, nullable=False),
-        *timestamps(),
+        *_timestamps(),
     )
-    op.create_index("ix_agent_runs_user_id", "agent_runs", ["user_id"])
-    op.create_index("ix_agent_runs_conversation_id", "agent_runs", ["conversation_id"])
-    op.create_index("ix_agent_runs_status", "agent_runs", ["status"])
+    _index("ix_agent_runs_user_id", "agent_runs", ["user_id"])
+    _index("ix_agent_runs_conversation_id", "agent_runs", ["conversation_id"])
+    _index("ix_agent_runs_status", "agent_runs", ["status"])
 
     op.create_table(
         "agent_steps",
-        uuid_column(),
-        sa.Column("run_id", sa.String(36), sa.ForeignKey("agent_runs.id"), nullable=False),
+        _pk(),
+        _fk("agent_steps", "run_id", "agent_runs.id"),
         sa.Column("index", sa.Integer, nullable=False),
         sa.Column("type", sa.String(64), nullable=False),
         sa.Column("meta", sa.JSON, nullable=False),
-        *timestamps(),
+        *_timestamps(),
+        sa.UniqueConstraint("run_id", "index", name="uq_agent_steps_run_index"),
     )
-    op.create_unique_constraint("uq_agent_steps_run_index", "agent_steps", ["run_id", "index"])
-    op.create_index("ix_agent_steps_run_id", "agent_steps", ["run_id"])
-    op.create_index("ix_agent_steps_run_type", "agent_steps", ["run_id", "type"])
+    _index("ix_agent_steps_run_id", "agent_steps", ["run_id"])
+    _index("ix_agent_steps_run_type", "agent_steps", ["run_id", "type"])
 
     op.create_table(
         "tools",
-        uuid_column(),
+        _pk(),
         sa.Column("name", sa.String(128), nullable=False),
         sa.Column("version", sa.String(64), nullable=False),
         sa.Column("enabled", sa.Boolean, nullable=False),
         sa.Column("sensitivity", sa.String(32), nullable=False),
-        *timestamps(),
+        *_timestamps(),
+        sa.UniqueConstraint("name", "version", name="uq_tools_name_version"),
     )
-    op.create_unique_constraint("uq_tools_name_version", "tools", ["name", "version"])
 
     op.create_table(
         "tool_executions",
-        uuid_column(),
-        sa.Column("run_id", sa.String(36), sa.ForeignKey("agent_runs.id"), nullable=False),
-        sa.Column("tool_id", sa.String(36), sa.ForeignKey("tools.id")),
+        _pk(),
+        _fk("tool_executions", "run_id", "agent_runs.id"),
+        _fk("tool_executions", "tool_id", "tools.id", nullable=True),
         sa.Column("name", sa.String(128), nullable=False),
         sa.Column("status", sa.String(32), nullable=False),
         sa.Column("input", sa.JSON, nullable=False),
         sa.Column("output", sa.JSON),
         sa.Column("failure_reason", sa.Text),
-        *timestamps(),
+        *_timestamps(),
     )
-    op.create_index("ix_tool_executions_run_id", "tool_executions", ["run_id"])
-    op.create_index("ix_tool_executions_tool_id", "tool_executions", ["tool_id"])
-    op.create_index("ix_tool_executions_status", "tool_executions", ["status"])
+    _index("ix_tool_executions_run_id", "tool_executions", ["run_id"])
+    _index("ix_tool_executions_tool_id", "tool_executions", ["tool_id"])
+    _index("ix_tool_executions_status", "tool_executions", ["status"])
 
     op.create_table(
         "memories",
-        uuid_column(),
-        sa.Column("owner_id", sa.String(36), sa.ForeignKey("users.id"), nullable=False),
+        _pk(),
+        _fk("memories", "owner_id", "users.id"),
         sa.Column("type", sa.String(64), nullable=False),
         sa.Column("status", sa.String(32), nullable=False),
-        *timestamps(),
+        *_timestamps(),
     )
-    op.create_index("ix_memories_owner_id", "memories", ["owner_id"])
-    op.create_index("ix_memories_status", "memories", ["status"])
-    op.create_index("ix_memories_owner_type", "memories", ["owner_id", "type"])
+    _index("ix_memories_owner_id", "memories", ["owner_id"])
+    _index("ix_memories_status", "memories", ["status"])
+    _index("ix_memories_owner_type", "memories", ["owner_id", "type"])
 
     op.create_table(
         "memory_items",
-        uuid_column(),
-        sa.Column("memory_id", sa.String(36), sa.ForeignKey("memories.id"), nullable=False),
+        _pk(),
+        _fk("memory_items", "memory_id", "memories.id"),
         sa.Column("content", sa.Text, nullable=False),
         sa.Column("importance", sa.Integer, nullable=False),
         sa.Column("meta", sa.JSON, nullable=False),
-        *timestamps(),
+        *_timestamps(),
     )
-    op.create_index("ix_memory_items_memory_id", "memory_items", ["memory_id"])
+    _index("ix_memory_items_memory_id", "memory_items", ["memory_id"])
 
     op.create_table(
         "files",
-        uuid_column(),
-        sa.Column("owner_id", sa.String(36), sa.ForeignKey("users.id"), nullable=False),
+        _pk(),
+        _fk("files", "owner_id", "users.id"),
         sa.Column("filename", sa.String(512), nullable=False),
         sa.Column("mime_type", sa.String(255), nullable=False),
         sa.Column("size_bytes", sa.BigInteger, nullable=False),
         sa.Column("checksum_sha256", sa.String(64), nullable=False),
         sa.Column("storage_key", sa.String(1024), nullable=False),
         sa.Column("processing_status", sa.String(32), nullable=False),
-        *timestamps(),
+        *_timestamps(),
+        sa.UniqueConstraint("storage_key", name="uq_files_storage_key"),
     )
-    op.create_unique_constraint("uq_files_storage_key", "files", ["storage_key"])
-    op.create_index("ix_files_owner_id", "files", ["owner_id"])
-    op.create_index("ix_files_processing_status", "files", ["processing_status"])
-    op.create_index("ix_files_owner_status", "files", ["owner_id", "processing_status"])
+    _index("ix_files_owner_id", "files", ["owner_id"])
+    _index("ix_files_processing_status", "files", ["processing_status"])
+    _index("ix_files_owner_status", "files", ["owner_id", "processing_status"])
 
     op.create_table(
         "file_chunks",
-        uuid_column(),
-        sa.Column("file_id", sa.String(36), sa.ForeignKey("files.id"), nullable=False),
+        _pk(),
+        _fk("file_chunks", "file_id", "files.id"),
         sa.Column("index", sa.Integer, nullable=False),
         sa.Column("content", sa.Text, nullable=False),
         sa.Column("meta", sa.JSON, nullable=False),
-        *timestamps(),
+        *_timestamps(),
+        sa.UniqueConstraint("file_id", "index", name="uq_file_chunks_file_index"),
     )
-    op.create_unique_constraint("uq_file_chunks_file_index", "file_chunks", ["file_id", "index"])
-    op.create_index("ix_file_chunks_file_id", "file_chunks", ["file_id"])
+    _index("ix_file_chunks_file_id", "file_chunks", ["file_id"])
 
     op.create_table(
         "usage_records",
-        uuid_column(),
-        sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id"), nullable=False),
+        _pk(),
+        _fk("usage_records", "user_id", "users.id"),
         sa.Column("dimension", sa.String(64), nullable=False),
         sa.Column("amount", sa.Integer, nullable=False),
         sa.Column("period", sa.String(32), nullable=False),
         sa.Column("meta", sa.JSON, nullable=False),
-        *timestamps(),
+        *_timestamps(),
     )
-    op.create_index("ix_usage_records_user_id", "usage_records", ["user_id"])
-    op.create_index("ix_usage_records_user_dimension_period", "usage_records", ["user_id", "dimension", "period"])
+    _index("ix_usage_records_user_id", "usage_records", ["user_id"])
+    _index(
+        "ix_usage_records_user_dimension_period",
+        "usage_records",
+        ["user_id", "dimension", "period"],
+    )
 
     op.create_table(
         "subscriptions",
-        uuid_column(),
-        sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id"), nullable=False),
+        _pk(),
+        _fk("subscriptions", "user_id", "users.id"),
         sa.Column("plan", sa.String(64), nullable=False),
         sa.Column("status", sa.String(32), nullable=False),
         sa.Column("valid_until", sa.DateTime(timezone=True)),
-        *timestamps(),
+        *_timestamps(),
     )
-    op.create_index("ix_subscriptions_user_id", "subscriptions", ["user_id"])
-    op.create_index("ix_subscriptions_status", "subscriptions", ["status"])
+    _index("ix_subscriptions_user_id", "subscriptions", ["user_id"])
+    _index("ix_subscriptions_status", "subscriptions", ["status"])
 
     op.create_table(
         "tasks",
-        uuid_column(),
+        _pk(),
         sa.Column("type", sa.String(128), nullable=False),
         sa.Column("state", sa.String(32), nullable=False),
         sa.Column("payload", sa.JSON, nullable=False),
@@ -240,49 +306,55 @@ def upgrade() -> None:
         sa.Column("max_attempts", sa.Integer, nullable=False),
         sa.Column("idempotency_key", sa.String(255)),
         sa.Column("last_error", sa.Text),
-        *timestamps(),
+        *_timestamps(),
+        sa.UniqueConstraint(
+            "type", "idempotency_key", name="uq_tasks_type_idempotency_key"
+        ),
     )
-    op.create_unique_constraint("uq_tasks_type_idempotency_key", "tasks", ["type", "idempotency_key"])
-    op.create_index("ix_tasks_type", "tasks", ["type"])
-    op.create_index("ix_tasks_state", "tasks", ["state"])
+    _index("ix_tasks_type", "tasks", ["type"])
+    _index("ix_tasks_state", "tasks", ["state"])
 
     op.create_table(
         "task_attempts",
-        uuid_column(),
-        sa.Column("task_id", sa.String(36), sa.ForeignKey("tasks.id"), nullable=False),
+        _pk(),
+        _fk("task_attempts", "task_id", "tasks.id"),
         sa.Column("attempt_number", sa.Integer, nullable=False),
         sa.Column("status", sa.String(32), nullable=False),
         sa.Column("error", sa.Text),
-        *timestamps(),
+        *_timestamps(),
+        sa.UniqueConstraint(
+            "task_id", "attempt_number", name="uq_task_attempts_task_attempt"
+        ),
     )
-    op.create_unique_constraint("uq_task_attempts_task_attempt", "task_attempts", ["task_id", "attempt_number"])
-    op.create_index("ix_task_attempts_task_id", "task_attempts", ["task_id"])
+    _index("ix_task_attempts_task_id", "task_attempts", ["task_id"])
 
     op.create_table(
         "idempotency_records",
-        uuid_column(),
+        _pk(),
         sa.Column("namespace", sa.String(128), nullable=False),
         sa.Column("key", sa.String(255), nullable=False),
         sa.Column("state", sa.String(32), nullable=False),
         sa.Column("result", sa.JSON, nullable=False),
-        *timestamps(),
+        *_timestamps(),
+        sa.UniqueConstraint(
+            "namespace", "key", name="uq_idempotency_namespace_key"
+        ),
     )
-    op.create_unique_constraint("uq_idempotency_namespace_key", "idempotency_records", ["namespace", "key"])
-    op.create_index("ix_idempotency_records_state", "idempotency_records", ["state"])
+    _index("ix_idempotency_records_state", "idempotency_records", ["state"])
 
     op.create_table(
         "audit_logs",
-        uuid_column(),
-        sa.Column("actor_user_id", sa.String(36), sa.ForeignKey("users.id")),
+        _pk(),
+        _fk("audit_logs", "actor_user_id", "users.id", nullable=True),
         sa.Column("action", sa.String(128), nullable=False),
         sa.Column("target_type", sa.String(128)),
         sa.Column("target_id", sa.String(128)),
         sa.Column("outcome", sa.String(32), nullable=False),
         sa.Column("meta", sa.JSON, nullable=False),
-        *timestamps(),
+        *_timestamps(),
     )
-    op.create_index("ix_audit_logs_actor_user_id", "audit_logs", ["actor_user_id"])
-    op.create_index("ix_audit_logs_action", "audit_logs", ["action"])
+    _index("ix_audit_logs_actor_user_id", "audit_logs", ["actor_user_id"])
+    _index("ix_audit_logs_action", "audit_logs", ["action"])
 
 
 def downgrade() -> None:
