@@ -16,6 +16,7 @@ from nexabot.domain.agent.entities import (
 )
 from nexabot.domain.common.errors import NotFoundError
 from nexabot.domain.common.ids import AgentRunId, AgentStepId, ConversationId, UserId
+from nexabot.infrastructure.database.base import ensure_utc, ensure_utc_optional
 from nexabot.infrastructure.database.models import AgentRunModel, AgentStepModel
 
 
@@ -65,15 +66,20 @@ class SqlAlchemyAgentRunRepository:
         row.final_response = run.final_response
         row.usage_metadata = dict(run.usage_metadata)
 
-        persisted_step_count = (
+        # Append by index rather than by count. Steps are numbered from 1 and
+        # never renumbered, so "index greater than the highest stored" is the
+        # set that is genuinely new; counting instead assumes the stored rows
+        # are a gapless prefix, and silently writes duplicates if they are not.
+        highest_persisted = (
             await self._session.execute(
-                sa.select(sa.func.count())
-                .select_from(AgentStepModel)
-                .where(AgentStepModel.run_id == str(run.id))
+                sa.select(sa.func.coalesce(sa.func.max(AgentStepModel.index), 0)).where(
+                    AgentStepModel.run_id == str(run.id)
+                )
             )
         ).scalar_one()
-        for step in run.steps[persisted_step_count:]:
-            await self.append_step(step)
+        for step in run.steps:
+            if step.index > highest_persisted:
+                await self.append_step(step)
 
     async def append_step(self, step: AgentStep) -> None:
         self._session.add(
@@ -83,6 +89,10 @@ class SqlAlchemyAgentRunRepository:
                 index=step.index,
                 type=step.type.value,
                 meta=dict(step.metadata),
+                # The step records when the run took it, not when the row was
+                # written; those differ whenever settlement is deferred.
+                created_at=step.created_at,
+                updated_at=step.created_at,
             )
         )
         await self._session.flush()
@@ -102,7 +112,7 @@ class SqlAlchemyAgentRunRepository:
                 index=step_row.index,
                 type=AgentStepType(step_row.type),
                 metadata=step_row.meta,
-                created_at=step_row.created_at,
+                created_at=ensure_utc(step_row.created_at),
             )
             for step_row in step_rows
         )
@@ -121,8 +131,8 @@ class SqlAlchemyAgentRunRepository:
             ),
             status=AgentRunStatus(row.status),
             steps=steps,
-            started_at=row.started_at,
-            finished_at=row.finished_at,
+            started_at=ensure_utc_optional(row.started_at),
+            finished_at=ensure_utc_optional(row.finished_at),
             failure_reason=row.failure_reason,
             final_response=row.final_response,
             usage_metadata=row.usage_metadata,

@@ -56,6 +56,12 @@ class UserModel(TimestampMixin, Base):
     id: Mapped[str] = uuid_pk()
     status: Mapped[str] = mapped_column(sa.String(32), nullable=False, index=True)
 
+    __table_args__ = (
+        sa.CheckConstraint(
+            "status IN ('active', 'banned', 'disabled')", name="user_status_valid"
+        ),
+    )
+
 
 class TelegramIdentityModel(TimestampMixin, Base):
     __tablename__ = "telegram_identities"
@@ -101,7 +107,12 @@ class ConversationModel(TimestampMixin, Base):
     title: Mapped[str | None] = mapped_column(sa.String(255))
     meta: Mapped[dict[str, Any]] = mapped_column(sa.JSON, default=dict, nullable=False)
 
-    __table_args__ = (sa.Index("ix_conversations_owner_status", "owner_id", "status"),)
+    __table_args__ = (
+        sa.Index("ix_conversations_owner_status", "owner_id", "status"),
+        sa.CheckConstraint(
+            "status IN ('active', 'archived', 'deleted')", name="conversation_status_valid"
+        ),
+    )
 
 
 class MessageModel(TimestampMixin, Base):
@@ -115,6 +126,12 @@ class MessageModel(TimestampMixin, Base):
 
     __table_args__ = (
         sa.Index("ix_messages_conversation_created", "conversation_id", "created_at"),
+        sa.CheckConstraint(
+            "role IN ('system', 'user', 'assistant', 'tool')", name="message_role_valid"
+        ),
+        # Message.__post_init__ rejects blank content; an empty row would load
+        # back as an entity the domain considers impossible to construct.
+        sa.CheckConstraint("content <> ''", name="message_content_not_empty"),
     )
 
 
@@ -138,6 +155,29 @@ class AgentRunModel(TimestampMixin, Base):
     max_execution_seconds: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=60)
     max_context_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=12_000)
 
+    __table_args__ = (
+        sa.CheckConstraint(
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')",
+            name="agent_run_status_valid",
+        ),
+        # Mirrors AgentLimits.__post_init__, which refuses to build a run whose
+        # budgets are not positive.
+        sa.CheckConstraint(
+            "max_steps > 0 AND max_tool_calls > 0 AND max_retries > 0 "
+            "AND max_execution_seconds > 0 AND max_context_tokens > 0",
+            name="agent_run_limits_positive",
+        ),
+        # A run that reached a terminal state recorded how it ended. Without
+        # this, a half-written settlement leaves a row that looks finished but
+        # carries neither an answer nor a reason.
+        sa.CheckConstraint(
+            "(status NOT IN ('succeeded', 'failed', 'cancelled') OR finished_at IS NOT NULL) "
+            "AND (status <> 'succeeded' OR final_response IS NOT NULL) "
+            "AND (status <> 'failed' OR failure_reason IS NOT NULL)",
+            name="agent_run_terminal_state_recorded",
+        ),
+    )
+
 
 class AgentStepModel(TimestampMixin, Base):
     __tablename__ = "agent_steps"
@@ -151,6 +191,11 @@ class AgentStepModel(TimestampMixin, Base):
     __table_args__ = (
         sa.UniqueConstraint("run_id", "index", name="uq_agent_steps_run_index"),
         sa.Index("ix_agent_steps_run_type", "run_id", "type"),
+        # AgentRun numbers steps from 1; index 0 or negative would break the
+        # "persisted steps are a prefix of in-memory steps" assumption the
+        # agent-run repository relies on when appending new steps.
+        # "index" is quoted because it is a reserved word on SQLite.
+        sa.CheckConstraint('"index" >= 1', name="agent_step_index_positive"),
     )
 
 
@@ -296,10 +341,18 @@ class IdempotencyRecordModel(TimestampMixin, Base):
     claimed_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=utc_now, nullable=False
     )
+    # Identifies the *current* claim. Settlement is conditioned on it, so a
+    # worker whose claim expired and was taken over cannot overwrite the
+    # outcome recorded by the attempt that replaced it.
+    claim_token: Mapped[str] = mapped_column(sa.String(36), nullable=False)
 
     __table_args__ = (
         sa.UniqueConstraint("namespace", "key", name="uq_idempotency_namespace_key"),
         sa.Index("ix_idempotency_records_state_claimed_at", "state", "claimed_at"),
+        sa.CheckConstraint(
+            "state IN ('started', 'completed', 'failed')",
+            name="idempotency_state_valid",
+        ),
     )
 
 

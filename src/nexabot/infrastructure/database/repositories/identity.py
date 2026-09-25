@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexabot.domain.common.errors import NotFoundError
 from nexabot.domain.common.ids import UserId
 from nexabot.domain.identity.entities import Permission, Role, TelegramIdentity, User, UserStatus
+from nexabot.infrastructure.database.base import ensure_utc
 from nexabot.infrastructure.database.models import (
     PermissionModel,
     RoleModel,
@@ -108,8 +109,8 @@ class SqlAlchemyUserRepository:
                 if identity_row is not None
                 else None
             ),
-            created_at=row.created_at,
-            updated_at=row.updated_at,
+            created_at=ensure_utc(row.created_at),
+            updated_at=ensure_utc(row.updated_at),
         )
 
     async def _load_roles(self, user_id: str) -> frozenset[Role]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import TracebackType
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -20,6 +21,8 @@ from nexabot.ports.repositories.agent import AgentRunRepository
 from nexabot.ports.repositories.conversations import ConversationRepository
 from nexabot.ports.repositories.idempotency import IdempotencyRepository
 from nexabot.ports.repositories.identity import UserRepository
+
+logger = logging.getLogger(__name__)
 
 
 class SqlAlchemyUnitOfWork:
@@ -65,7 +68,7 @@ class SqlAlchemyUnitOfWork:
                 with translate_database_errors(operation="commit"):
                     await session.commit()
             else:
-                await session.rollback()
+                await self._rollback_quietly(session)
         finally:
             await session.close()
             self._session = None
@@ -77,6 +80,21 @@ class SqlAlchemyUnitOfWork:
             # translator converts the error and keeps the original as __cause__.
             with translate_database_errors(operation="transaction"):
                 raise exc
+
+    @staticmethod
+    async def _rollback_quietly(session: AsyncSession) -> None:
+        """Roll back, but never let the rollback replace the original error.
+
+        A transaction is usually unwinding because something already went
+        wrong; if the connection is what went wrong, the rollback fails too.
+        Letting that propagate would hide the failure the caller actually needs
+        to see behind a generic connection error. The session is closed either
+        way, so a failed rollback leaks nothing.
+        """
+        try:
+            await session.rollback()
+        except SQLAlchemyError:
+            logger.warning("unit_of_work.rollback_failed", exc_info=True)
 
 
 class SqlAlchemyUnitOfWorkFactory:

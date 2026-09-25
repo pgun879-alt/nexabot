@@ -35,6 +35,13 @@ class IdempotencyRecord:
     attempt is in flight, and duplicating the work is exactly what the
     idempotency key exists to prevent.
     """
+    claim_token: str | None = None
+    """Proof of the claim this caller holds; ``None`` unless ``owned``.
+
+    Ownership is not permanent: a claim that outlives its TTL can be taken over
+    by another attempt. The token identifies *which* claim the caller holds, so
+    settlement can be refused when the caller is no longer the current owner.
+    """
 
 
 class IdempotencyRepository(Protocol):
@@ -47,8 +54,14 @@ class IdempotencyRepository(Protocol):
     ) -> IdempotencyRecord:
         """Claim an operation, or report the existing record for this key."""
 
-    async def complete(self, namespace: str, key: str, result: Mapping[str, Any]) -> None:
-        """Mark an operation as completed."""
+    async def complete(
+        self, namespace: str, key: str, result: Mapping[str, Any], *, claim_token: str
+    ) -> None:
+        """Mark an operation completed, if ``claim_token`` still holds the claim.
 
-    async def fail(self, namespace: str, key: str, reason: str) -> None:
-        """Mark an operation as failed."""
+        Raises ``ConflictError`` when it does not: a worker whose claim expired
+        and was taken over must not overwrite the newer owner's outcome.
+        """
+
+    async def fail(self, namespace: str, key: str, reason: str, *, claim_token: str) -> None:
+        """Mark an operation failed, if ``claim_token`` still holds the claim."""

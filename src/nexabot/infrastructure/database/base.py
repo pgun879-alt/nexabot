@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import sqlalchemy as sa
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -20,6 +20,24 @@ NAMING_CONVENTION = {
 
 class Base(DeclarativeBase):
     metadata = sa.MetaData(naming_convention=NAMING_CONVENTION)
+
+
+def ensure_utc(value: datetime) -> datetime:
+    """Re-attach UTC to a timestamp a backend handed back naive.
+
+    Every timestamp NexaBot writes is timezone-aware UTC, but not every backend
+    stores the offset: PostgreSQL's ``timestamptz`` returns it, SQLite does
+    not. A naive value reaching a domain entity is a latent ``TypeError`` —
+    subtracting it from ``utc_now()`` (as the agent run deadline does) raises
+    "can't subtract offset-naive and offset-aware datetimes" only on the
+    backend where it was not caught. Normalising at the row-to-entity boundary
+    keeps that difference out of the domain entirely.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def ensure_utc_optional(value: datetime | None) -> datetime | None:
+    return None if value is None else ensure_utc(value)
 
 
 class TimestampMixin:
