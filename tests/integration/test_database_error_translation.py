@@ -6,32 +6,21 @@ taxonomy and surfaces to users as an opaque 500.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from nexabot.domain.common.errors import ConflictError, ExternalServiceError
 from nexabot.domain.common.ids import new_conversation_id, new_user_id
 from nexabot.domain.conversations.entities import Conversation
 from nexabot.domain.identity.entities import TelegramIdentity, User
-from nexabot.infrastructure.database import models as _models  # noqa: F401
-from nexabot.infrastructure.database.base import Base
 from nexabot.infrastructure.database.errors import translate_database_errors
 from nexabot.infrastructure.database.unit_of_work import SqlAlchemyUnitOfWorkFactory
-
-
-async def _make_sessionmaker() -> async_sessionmaker[AsyncSession]:
-    engine = create_async_engine("sqlite+aiosqlite://")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    return async_sessionmaker(engine, expire_on_commit=False)
+from tests.support import EngineRegistry, run_scenario
 
 
 def test_constraint_violation_surfaces_as_a_domain_conflict() -> None:
-    async def scenario() -> None:
-        sessionmaker = await _make_sessionmaker()
+    async def scenario(engines: EngineRegistry) -> None:
+        sessionmaker = await engines.sessionmaker()
         uow_factory = SqlAlchemyUnitOfWorkFactory(sessionmaker)
 
         user = User(id=new_user_id())
@@ -52,12 +41,12 @@ def test_constraint_violation_surfaces_as_a_domain_conflict() -> None:
         assert raised.value.http_status == 409
         assert isinstance(raised.value.__cause__, SQLAlchemyError)
 
-    asyncio.run(scenario())
+    run_scenario(scenario)
 
 
 def test_duplicate_primary_key_does_not_leak_sqlalchemy() -> None:
-    async def scenario() -> None:
-        sessionmaker = await _make_sessionmaker()
+    async def scenario(engines: EngineRegistry) -> None:
+        sessionmaker = await engines.sessionmaker()
         uow_factory = SqlAlchemyUnitOfWorkFactory(sessionmaker)
 
         owner = User(id=new_user_id())
@@ -72,7 +61,7 @@ def test_duplicate_primary_key_does_not_leak_sqlalchemy() -> None:
             async with uow_factory() as uow:
                 await uow.conversations.add(conversation)
 
-    asyncio.run(scenario())
+    run_scenario(scenario)
 
 
 def test_translator_maps_connection_failures_to_a_retryable_error() -> None:

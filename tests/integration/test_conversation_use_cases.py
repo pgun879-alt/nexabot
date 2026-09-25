@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import asyncio
-
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from nexabot.application.conversations.use_cases import (
     AppendMessage,
@@ -16,19 +14,11 @@ from nexabot.domain.common.errors import ConflictError, NotFoundError
 from nexabot.domain.common.ids import UserId, new_conversation_id, new_user_id
 from nexabot.domain.conversations.entities import MessageRole
 from nexabot.domain.identity.entities import User
-from nexabot.infrastructure.database import models as _models  # noqa: F401
-from nexabot.infrastructure.database.base import Base
 from nexabot.infrastructure.database.repositories.conversations import (
     SqlAlchemyConversationRepository,
 )
 from nexabot.infrastructure.database.repositories.identity import SqlAlchemyUserRepository
-
-
-async def _make_sessionmaker() -> async_sessionmaker[AsyncSession]:
-    engine = create_async_engine("sqlite+aiosqlite://")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    return async_sessionmaker(engine, expire_on_commit=False)
+from tests.support import EngineRegistry, run_scenario
 
 
 async def _make_owner(sessionmaker: async_sessionmaker[AsyncSession]) -> UserId:
@@ -40,8 +30,8 @@ async def _make_owner(sessionmaker: async_sessionmaker[AsyncSession]) -> UserId:
 
 
 def test_create_conversation_and_append_messages() -> None:
-    async def scenario() -> None:
-        sessionmaker = await _make_sessionmaker()
+    async def scenario(engines: EngineRegistry) -> None:
+        sessionmaker = await engines.sessionmaker()
         owner_id = await _make_owner(sessionmaker)
 
         async with sessionmaker() as session:
@@ -66,12 +56,12 @@ def test_create_conversation_and_append_messages() -> None:
             ).execute(conversation.id, limit=1)
             assert [message.content for message in recent] == ["hi"]
 
-    asyncio.run(scenario())
+    run_scenario(scenario)
 
 
 def test_append_message_to_unknown_conversation_raises_not_found() -> None:
-    async def scenario() -> None:
-        sessionmaker = await _make_sessionmaker()
+    async def scenario(engines: EngineRegistry) -> None:
+        sessionmaker = await engines.sessionmaker()
         async with sessionmaker() as session:
             append = AppendMessage(conversations=SqlAlchemyConversationRepository(session))
             with pytest.raises(NotFoundError):
@@ -81,12 +71,12 @@ def test_append_message_to_unknown_conversation_raises_not_found() -> None:
                     content="hello",
                 )
 
-    asyncio.run(scenario())
+    run_scenario(scenario)
 
 
 def test_archive_then_delete_conversation() -> None:
-    async def scenario() -> None:
-        sessionmaker = await _make_sessionmaker()
+    async def scenario(engines: EngineRegistry) -> None:
+        sessionmaker = await engines.sessionmaker()
         owner_id = await _make_owner(sessionmaker)
 
         async with sessionmaker() as session:
@@ -114,4 +104,4 @@ def test_archive_then_delete_conversation() -> None:
             await session.commit()
             assert deleted.status.value == "deleted"
 
-    asyncio.run(scenario())
+    run_scenario(scenario)

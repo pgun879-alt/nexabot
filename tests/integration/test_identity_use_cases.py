@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from nexabot.application.identity.use_cases import (
     BanUser,
@@ -14,21 +11,13 @@ from nexabot.application.identity.use_cases import (
 from nexabot.domain.common.errors import AuthorizationError, ConflictError, NotFoundError
 from nexabot.domain.common.ids import new_user_id
 from nexabot.domain.identity.entities import TelegramIdentity, User
-from nexabot.infrastructure.database import models as _models  # noqa: F401
-from nexabot.infrastructure.database.base import Base
 from nexabot.infrastructure.database.repositories.identity import SqlAlchemyUserRepository
-
-
-async def _make_sessionmaker() -> async_sessionmaker[AsyncSession]:
-    engine = create_async_engine("sqlite+aiosqlite://")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    return async_sessionmaker(engine, expire_on_commit=False)
+from tests.support import EngineRegistry, run_scenario
 
 
 def test_register_telegram_user_creates_then_updates_on_repeat_calls() -> None:
-    async def scenario() -> None:
-        sessionmaker = await _make_sessionmaker()
+    async def scenario(engines: EngineRegistry) -> None:
+        sessionmaker = await engines.sessionmaker()
         identity = TelegramIdentity(telegram_user_id=42, username="first-name")
 
         async with sessionmaker() as session:
@@ -46,12 +35,12 @@ def test_register_telegram_user_creates_then_updates_on_repeat_calls() -> None:
         assert updated.telegram_identity is not None
         assert updated.telegram_identity.username == "renamed"
 
-    asyncio.run(scenario())
+    run_scenario(scenario)
 
 
 def test_resolve_current_actor_rejects_unknown_and_banned_users() -> None:
-    async def scenario() -> None:
-        sessionmaker = await _make_sessionmaker()
+    async def scenario(engines: EngineRegistry) -> None:
+        sessionmaker = await engines.sessionmaker()
         identity = TelegramIdentity(telegram_user_id=7)
 
         async with sessionmaker() as session:
@@ -78,12 +67,12 @@ def test_resolve_current_actor_rejects_unknown_and_banned_users() -> None:
             with pytest.raises(ConflictError):
                 await ResolveCurrentActor(users=SqlAlchemyUserRepository(session)).execute(7)
 
-    asyncio.run(scenario())
+    run_scenario(scenario)
 
 
 def test_ban_and_unban_user_round_trip() -> None:
-    async def scenario() -> None:
-        sessionmaker = await _make_sessionmaker()
+    async def scenario(engines: EngineRegistry) -> None:
+        sessionmaker = await engines.sessionmaker()
         user_id = new_user_id()
 
         async with sessionmaker() as session:
@@ -103,14 +92,14 @@ def test_ban_and_unban_user_round_trip() -> None:
             await session.commit()
             assert unbanned.status.value == "active"
 
-    asyncio.run(scenario())
+    run_scenario(scenario)
 
 
 def test_ban_unknown_user_raises_not_found() -> None:
-    async def scenario() -> None:
-        sessionmaker = await _make_sessionmaker()
+    async def scenario(engines: EngineRegistry) -> None:
+        sessionmaker = await engines.sessionmaker()
         async with sessionmaker() as session:
             with pytest.raises(NotFoundError):
                 await BanUser(users=SqlAlchemyUserRepository(session)).execute(new_user_id())
 
-    asyncio.run(scenario())
+    run_scenario(scenario)

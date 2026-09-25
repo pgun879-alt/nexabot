@@ -37,7 +37,8 @@ dev = [
 where = ["src"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+# "." makes tests.support importable from any test module.
+pythonpath = ["src", "."]
 testpaths = ["tests"]
 addopts = "-q"
 
