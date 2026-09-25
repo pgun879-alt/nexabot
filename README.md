@@ -3,7 +3,7 @@
 **An AI assistant and automation platform, built as a modular monolith with
 clean architecture — in Python 3.11+, FastAPI, SQLAlchemy 2 async, and Alembic.**
 
-[![CI](https://github.com/OWNER/nexabot/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/nexabot/actions/workflows/ci.yml)
+[![CI](https://github.com/pgun879-alt/nexabot/actions/workflows/ci.yml/badge.svg)](https://github.com/pgun879-alt/nexabot/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
 [![mypy](https://img.shields.io/badge/mypy-strict-brightgreen)](https://mypy-lang.org/)
 [![Ruff](https://img.shields.io/badge/lint-ruff-261230)](https://docs.astral.sh/ruff/)
