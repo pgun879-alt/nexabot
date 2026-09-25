@@ -1,6 +1,11 @@
 # NexaBot Architecture Specification
 
-Date: 2026-08-24
+Date: 2026-08-24 (status notes updated 2026-09-24)
+
+> This document describes the **target** architecture. Much of it is not built
+> yet. `README.md` is the authoritative record of what is implemented,
+> partially implemented, planned, or a production blocker — read it before
+> assuming anything here exists in code.
 
 ## System shape
 
@@ -272,6 +277,44 @@ never returned to users.
 - Resource use is bounded: file sizes, agent steps, tool timeouts, rate limits,
   context size, task attempts.
 - Audit logs record security-sensitive events and administrative actions.
+
+### HTTP authentication (not implemented)
+
+There is no HTTP authentication. `interfaces/api/security.py` defines the
+boundary and nothing more: `require_actor` is a dependency that **denies by
+default**, so a route declaring it is unreachable until an `Authenticator` is
+implemented and wired. The only routes served today are `/health/live` and
+`/health/ready`, neither of which reads user data.
+
+Domain permissions do not protect HTTP routes. `User.has_permission` answers
+"may this user do this?" only after "which user is this?" has been settled, and
+nothing settles that question over HTTP yet. Ownership checks belong in the
+application layer against a resolved actor — `RunAgentTurn` already does this —
+but they are only meaningful once the actor is authenticated rather than
+supplied by the caller.
+
+## Known limitations
+
+### Message ordering under identical timestamps
+
+Messages are ordered by `(created_at, id)`. `created_at` is the append instant
+assigned by the domain; `id` is a random UUID that only breaks exact ties, so
+the order is a stable total order but not guaranteed to be *append* order for
+messages written within the same microsecond.
+
+This is unreachable today: a turn is the only writer of a conversation's
+messages and appends them sequentially. If concurrent writers are ever
+introduced, the fix is a monotonic per-conversation sequence column — not a
+tighter timestamp, which only narrows the window.
+
+### Agent runs stranded by process death
+
+`RunAgentTurn` settles its run on every in-process exit path, including
+failures during final persistence. A process that is killed mid-turn leaves its
+run in `RUNNING` and its idempotency claim held. The claim expires on its own
+(`DEFAULT_CLAIM_TTL_SECONDS`) and can be taken over; the run does not. A reaper
+that fails runs left `RUNNING` past their `max_execution_seconds` is the
+missing piece.
 
 ## Observability
 
