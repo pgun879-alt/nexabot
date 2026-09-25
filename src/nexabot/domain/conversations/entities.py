@@ -49,6 +49,15 @@ class Conversation:
     metadata: Mapping[str, object] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+    history_window: int | None = None
+    """How many trailing messages were loaded, or ``None`` for the full history.
+
+    Loading every message of a long-running conversation to use the last
+    handful is wasteful, but a partially loaded aggregate that cannot be
+    distinguished from a complete one is worse. Recording the window lets
+    ``recent_messages`` refuse to answer a question the loaded data cannot
+    support instead of silently returning too little.
+    """
 
     def append_message(
         self,
@@ -66,12 +75,24 @@ class Conversation:
             metadata=metadata or {},
         )
         self.messages = (*self.messages, message)
+        if self.history_window is not None:
+            # The trailing run of known-loaded messages just grew by one. Not
+            # widening it would make the aggregate claim it knows less history
+            # than it is actually holding.
+            self.history_window += 1
         self.updated_at = utc_now()
         return message
 
     def recent_messages(self, limit: int) -> tuple[Message, ...]:
         if limit <= 0:
             raise ValidationError("Recent message limit must be positive.")
+        if self.history_window is not None and limit > self.history_window:
+            raise ValidationError(
+                "Requested more history than was loaded for this conversation.",
+                code="conversation_history_not_loaded",
+                requested=limit,
+                loaded=self.history_window,
+            )
         return self.messages[-limit:]
 
     def archive(self) -> None:
