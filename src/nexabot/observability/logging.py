@@ -15,6 +15,16 @@ SECRET_FIELD_PATTERN = re.compile(
     r"(token|secret|password|api[_-]?key|authorization)", re.IGNORECASE
 )
 
+URL_CREDENTIALS_PATTERN = re.compile(r"(?P<scheme>[a-z][a-z0-9+.\-]*://)(?P<userinfo>[^/\s@]+)@")
+"""Credentials embedded in a connection URL inside a log *message*.
+
+Key-based redaction only reaches values the caller passed as structured
+fields. Driver exceptions quote the whole DSN inside their message text, which
+key matching never sees — so a database outage would write the database
+password into the logs. The pattern is deliberately narrow (userinfo before an
+``@`` in a URL) to keep it from mangling ordinary prose.
+"""
+
 
 class TraceContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -44,6 +54,7 @@ class JsonFormatter(logging.Formatter):
 
 
 def redact(value: Any) -> Any:
+    """Mask secret-looking fields and URL credentials anywhere in a payload."""
     if isinstance(value, dict):
         return {
             key: ("********" if SECRET_FIELD_PATTERN.search(str(key)) else redact(child))
@@ -53,6 +64,8 @@ def redact(value: Any) -> Any:
         return [redact(item) for item in value]
     if isinstance(value, tuple):
         return tuple(redact(item) for item in value)
+    if isinstance(value, str):
+        return URL_CREDENTIALS_PATTERN.sub(r"\g<scheme>********@", value)
     return value
 
 

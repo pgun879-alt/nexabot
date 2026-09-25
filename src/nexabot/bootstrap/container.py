@@ -6,6 +6,7 @@ phases introduce PostgreSQL sessions, Redis queues, LLM providers, and Telegram.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -45,9 +46,18 @@ class CompositeReadinessChecker:
     component_checkers: dict[str, ComponentChecker]
 
     async def check(self) -> ReadinessReport:
-        components = {
-            name: await checker.check() for name, checker in self.component_checkers.items()
-        }
+        """Check every dependency concurrently.
+
+        Sequentially, a readiness probe costs the *sum* of its checks, so each
+        added dependency pushes the endpoint closer to the orchestrator's probe
+        timeout even when everything is healthy. Concurrently it costs the
+        slowest one.
+        """
+        names = list(self.component_checkers)
+        results = await asyncio.gather(
+            *(self.component_checkers[name].check() for name in names)
+        )
+        components = dict(zip(names, results, strict=True))
         return ReadinessReport(status=_aggregate_status(components), components=components)
 
 
